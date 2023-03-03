@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from jax import grad, vmap
+from jax import grad, vmap, device_put
 import jax.numpy as jnp
 from jax.scipy.signal import convolve2d
 import matplotlib.pyplot as plt
@@ -67,25 +67,47 @@ def generate_data_points(base_image, shift_image, number, space):
         x_data.append(space * -i)
         y_data.append(gradient_sum_overlay(base_image, shift_image, space * -i))
 
-    for i in range(1,number):
+    for i in range(1, number):
         x_data.append(space * i)
         y_data.append(gradient_sum_overlay(base_image, shift_image, space * i))
 
-
     return x_data, y_data
+
+
 # print(gradient_x)
 
-x_data, y_data = generate_data_points(base_image, right_image,25, 5)
+x_data, y_data = generate_data_points(base_image, right_image, 25, 5)
 print(x_data, y_data)
 
-coeffs = np.polyfit(x_data,y_data,25)
+coeffs = np.polyfit(x_data, y_data, 25)
 f = np.poly1d(coeffs)
 x = np.linspace(-100, 100, 100)
 
+
+def polynomial(x, coefficients):
+    """
+    Calculates the value of a polynomial with the given coefficients at a given value of x.
+    """
+    y = jnp.zeros_like(x,dtype=jnp.float64)
+    for i, c in enumerate(coefficients):
+        y += c * jnp.power(x, i)
+    return y
+
+
 # Evaluate the function at each point in the range
-y = f(x)
-plt.plot(x,y)
+y = []
+for k in x:
+    y.append(polynomial(k, np.flip(coeffs)))
+
+plt.plot(x, y)
 plt.show()
+
+derivative = grad(polynomial, 0)
+gradient = device_put(derivative(50.0, np.flip(coeffs)))
+
+print(polynomial(50.0, np.flip(coeffs)))
+print(gradient)
+
 key = cv2.waitKey(0)
 
 cv2.destroyAllWindows()
