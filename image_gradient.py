@@ -3,67 +3,86 @@ import numpy as np
 from jax import grad, vmap
 import jax.numpy as jnp
 from jax.scipy.signal import convolve2d
+from jax.scipy.ndimage import map_coordinates
+import time
+from jax.test_util import check_grads
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 
+# mpl.use('TkAgg')
 img = cv2.imread("images/banana.jpg", cv2.IMREAD_GRAYSCALE)
 img_rows, img_cols = img.shape[:2]
 zero_cols = np.ones((img_rows, np.abs(50)), np.uint8) * 255
 img = np.hstack((img, zero_cols))
+img = 255 - img
+cv2.imshow("inverted", img)
 
 
-def shift_image_left(image, shift_pixels):
-    rows, cols = image.shape[:2]
-    matrix = np.zeros((rows, cols), dtype=np.uint8)
-    matrix[:, -1] = 255
-    diag = np.eye(cols, cols, k=-1)
-    result = image
-    for i in range(int(shift_pixels)):
-        result = np.dot(result, diag)
-        result = result + matrix
-    return result
+def shift_image(image, x_shift):
+    # Create a meshgrid from the image coordinates
+    x, y = jnp.meshgrid(jnp.arange(image.shape[1]), jnp.arange(image.shape[0]))
+    # Shift the coordinates by the given amount
+    x_shifted = x + x_shift
+
+    # Interpolate the image values at the shifted coordinates
+    shifted_image = map_coordinates(image, [y, x_shifted], order=1, mode='nearest')
+    return shifted_image
 
 
-def shift_image_right(image, shift_pixels):
-    rows, cols = image.shape[:2]
-    matrix = np.zeros((rows, cols), dtype=np.uint8)
-    matrix[:, 0] = 255
-    diag = np.eye(cols, cols, k=1)
-    result = image
-    for i in range(int(shift_pixels)):
-        result = np.dot(result, diag)
-        result = result + matrix
-    return result
-
-
-def gradient_sum_overlay(base_image, right_image, shift):
-    shifted_image = shift_image_left(right_image, shift)
+def overlay(base_image, right_image, shift):
+    shifted_image = shift_image(right_image, shift)
     overlaid = (base_image + shifted_image) / 2.0
-    cv2.imshow("overlaid", overlaid.astype(np.uint8))
 
+    return overlaid
+
+
+def gradient_sum(image):
     sobel_x = jnp.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
     sobel_y = jnp.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]])
 
-    convolved_x = convolve2d(overlaid, sobel_x, mode='same')
-    convolved_y = convolve2d(overlaid, sobel_y, mode='same')
+    convolved_x = convolve2d(image, sobel_x, mode='same')
+    convolved_y = convolve2d(image, sobel_y, mode='same')
 
     # Compute gradient magnitude
-    grad = np.sqrt(jnp.square(convolved_x) + jnp.square(convolved_y))
-    cv2.imshow("overlay_gradient", grad.astype(np.uint8))
-    grad = jnp.sum(grad)
-    return grad
+    gradient_image = jnp.sqrt(jnp.square(convolved_x) + jnp.square(convolved_y))
+    cv2.imshow("overlay_gradient" + str(time.time()), np.array(gradient_image.astype(np.uint8)))
+
+    grad_sum = jnp.sum(gradient_image)
+    return grad_sum
 
 
-grad_shift = grad(gradient_sum_overlay, 2, allow_int=True)
+def loss(base_image, right_image, shift):
+    overlaid = overlay(base_image, right_image, shift)
+    return jnp.mean((base_image - overlaid) ** 2)
 
-image_right_shifted = shift_image_left(img, 50)
-right_image = image_right_shifted.astype(np.float32)
-base_image = img.astype(np.float32)
-gradient_x = grad_shift(base_image, right_image, 5.0)
 
-print(gradient_sum_overlay(base_image, right_image, 30.0))
-print(gradient_x)
+def generate_data_points(target, image, rangeStart, rangeEnd, stepsize):
+    x_data = []
+    y_data = []
+    for i in jnp.arange(rangeStart, rangeEnd, stepsize):
+        x_data.append(i)
+        theta = i
+        y_data.append(loss(target, image, theta))
 
-cv2.imshow("base", base_image.astype(np.uint8))
-cv2.imshow("right", right_image.astype(np.uint8))
+    return x_data, y_data
+
+
+# Shift the image by a real value and interpolate the resulting image
+right_img = shift_image(img.astype(np.float32), -50.5)
+
+cv2.imshow("interpolated", np.array(right_img).astype(np.uint8))
+
+x, y = generate_data_points(img, right_img, -60, 60, 1)
+
+print(x, y)
+plt.plot(x, y)
+plt.show()
+
+derivative = grad(loss, 2)
+gradient = derivative(img, right_img, 40.0)
+# check_grads(derivative, (img.astype(np.float32), right_img.astype(np.float32), 2.0), 1)
+
+print(gradient)
 
 key = cv2.waitKey(0)
 if key == 27:  # Press ESC to exit
