@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from jax import grad, vmap
+from jax import grad, vmap, jit
 import jax.numpy as jnp
 from jax.scipy.signal import convolve2d
 from jax.scipy.ndimage import map_coordinates
@@ -12,29 +12,40 @@ import imageio
 
 from jax.scipy.optimize import minimize
 
+
 # mpl.use('TkAgg')
-img = cv2.imread("images/banana.jpg", cv2.IMREAD_GRAYSCALE)
-img_rows, img_cols = img.shape[:2]
-zero_cols = np.ones((img_rows, np.abs(50)), np.uint8) * 255
-img = np.hstack((img, zero_cols))
-img = 255 - img
-cv2.imshow("inverted", img)
+def generate_image_stack(img, theta, number):
+    jitted_shift = jit(shift_image)
+    image_list = []
+    for i in range(number):
+        image_list.append(jitted_shift(img.astype(jnp.float32), i * theta))
+    return jnp.array(image_list)
 
 
 def shift_image(image, x_shift):
+    y_shift = 0
     # Create a meshgrid from the image coordinates
     x, y = jnp.meshgrid(jnp.arange(image.shape[1]), jnp.arange(image.shape[0]))
     # Shift the coordinates by the given amount
     x_shifted = x + x_shift
+    y_shifted = y + y_shift
 
     # Interpolate the image values at the shifted coordinates
-    shifted_image = map_coordinates(image, [y, x_shifted], order=1, mode='nearest')
+    shifted_image = map_coordinates(image, [y_shifted, x_shifted], order=1, mode='constant')
     return shifted_image
 
 
-def overlay(base_image, right_image, shift):
-    shifted_image = shift_image(right_image, shift)
-    overlaid = (base_image + shifted_image) / 2.0
+def shift_stack(stack, t, theta):
+    image_stack = []
+
+    for i, pic in enumerate(stack):
+        image_stack.append(shift_image(pic, theta * (i - t)))
+
+    return jnp.array(image_stack)
+
+
+def overlay(stack, t, theta):
+    overlaid = jnp.sum(shift_stack(stack, t, theta), axis=0) / float(len(image_stack))
 
     return overlaid
 
@@ -61,85 +72,108 @@ def gradient_sum(image):
     return magnitude
 
 
-def loss(base_image, shifted_image, shift):
-    overlaid = overlay(base_image, shifted_image, shift)
-    return jnp.mean((base_image - overlaid) ** 2)
+def loss(stack, theta):
+    overlaid = overlay(stack, 0, theta)
+    return jnp.mean((stack[0] - overlaid) ** 2)
 
 
-def gradient_loss(base_image, shifted_image, shift):
-    overlaid = overlay(base_image, shifted_image, shift)
+def gradient_loss(stack, t, theta):
+    overlaid = overlay(stack, t, theta)
     return gradient_sum(overlaid)
 
 
-def variance_loss(base_image, shifted_image, shift):
-    overlaid = overlay(base_image, shifted_image, shift)
+def variance_loss(stack, t, theta):
+    jitted_overlay = jit(overlay)
+    overlaid = jitted_overlay(stack, t, theta)
     return -jnp.var(overlaid)
 
 
-def generate_data_points(target, image, range_start, range_end, step_size, loss_function):
+def pixel_variance_loss(stack, t, theta):
+    stack = shift_stack(stack, t, theta)
+    num_pixels = jnp.prod(jnp.array(stack.shape[1:]))
+    pixel_values = stack.reshape((10, -1)).T
+    layer_values = pixel_values.reshape(num_pixels, stack.shape[0])
+    return jnp.sum(vmap(jnp.var)(layer_values))
+
+
+def generate_data_points(stack, t, range_start, range_end, step_size, loss_function):
     x_data = []
     y_data = []
     for i in jnp.arange(range_start, range_end, step_size):
         x_data.append(i)
         theta = i
         if loss_function == "variance":
-            y_data.append(variance_loss(target, image, theta))
+            y_data.append(variance_loss(stack, t, theta))
         if loss_function == "gradient":
-            y_data.append(gradient_loss(target, image, theta))
+            y_data.append(gradient_loss(stack, t, theta))
         if loss_function == "squared":
-            y_data.append(loss(target, image, theta))
+            y_data.append(loss(stack, t, theta))
+        if loss_function == "pixel_variance":
+            y_data.append(pixel_variance_loss(stack, t, theta))
 
     return x_data, y_data
 
 
-def variance_gradient_descent(img, shifted_img, theta, learning_rate):
+def variance_gradient_descent(stack, t, theta, learning_rate):
     image_list = []
     for i in range(100):
-        gradient = variance_derivative(img, shifted_img, theta)
+        gradient = variance_derivative(stack, t, theta)
 
         theta -= learning_rate * gradient
 
-        loss_temp = variance_loss(img, shifted_img, theta)
-        image_list.append(np.array(overlay(img, shifted_img, theta)).astype(np.uint8))
+        loss_temp = variance_loss(stack, t, theta)
+        image_list.append(np.array(overlay(stack, t, theta)).astype(np.uint8))
         print("Iteration {}: Loss = {:.6f} theta ={}".format(i, loss_temp, theta))
 
     return image_list
 
 
-def create_video(images):
+def create_video(images, name):
     height, width = images[0].shape
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    video_writer = cv2.VideoWriter("output.mp4", fourcc, 30.0, (width, height))
+    name = name + ".mp4"
+    video_writer = cv2.VideoWriter(name, fourcc, 30.0, (width, height))
     for array in images:
         video_writer.write(array)
     video_writer.release()
     print("video created")
 
 
-def create_gif(images):
+def create_gif(images, name):
     images = [imageio.core.util.Array(image) for image in images]
-
-    with imageio.get_writer("output.gif", mode="I", duration=0.1) as writer:
+    name = name + ".gif"
+    with imageio.get_writer(name, mode="I", duration=0.1) as writer:
         for image in images:
             writer.append_data(image)
     print("gif created")
+
+
+img = cv2.imread("images/banana.jpg", cv2.IMREAD_GRAYSCALE)
+img_rows, img_cols = img.shape[:2]
+zero_cols = np.ones((img_rows, np.abs(50)), np.uint8) * 255
+img = np.hstack((img, zero_cols))
+img = 255 - img
+cv2.imshow("inverted", img)
+
+image_stack = generate_image_stack(img, -15.0, 10)
+create_gif(np.array(image_stack).astype(np.uint8), "stack")
+
 # Shift the image by a real value and interpolate the resulting image
-right_img = shift_image(img.astype(np.float32), -50.5)
-cv2.imshow("interpolated", np.array(right_img).astype(np.uint8))
+cv2.imshow("interpolated", np.array(image_stack[9]).astype(np.uint8))
+cv2.imshow("re-interpolated", np.array(shift_image(image_stack[9], 10 * 15)).astype(np.uint8))
 
-x, y = generate_data_points(img, right_img, -100, 100, 0.1, "variance")
-
+x, y = generate_data_points(image_stack, 0.0, -100, 100, 0.1, "pixel_variance")
 plt.plot(x, y)
 plt.show()
+print("generated graph")
 
 variance_derivative = grad(variance_loss, 2)
-variance_gradient = variance_derivative(img, right_img, 10.0)
+variance_gradient = variance_derivative(image_stack, 0, 10.0)
 print(variance_gradient)
 
-images = variance_gradient_descent(img, right_img, 0.0, 0.2)
+gif_images = variance_gradient_descent(image_stack, 0.0, 0.0, 0.02)
 
-create_video(images)
-create_gif(images)
+create_gif(gif_images, "output")
 '''
 derivative = grad(loss, 2)
 gradient = derivative(img, right_img, 40.0)
