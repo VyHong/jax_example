@@ -13,7 +13,7 @@ import imageio
 from jax.scipy.optimize import minimize
 
 
-# mpl.use('TkAgg')
+mpl.use('TkAgg')
 def generate_image_stack(img, theta, number):
     jitted_shift = jit(shift_image)
     image_list = []
@@ -51,35 +51,34 @@ def overlay(stack, t, theta):
 
 
 def gradient_sum(image):
-    # Calculate the horizontal and vertical gradients using Sobel filters
-    # Define the Sobel kernels for the x and y directions.
+
     sobel_x = jnp.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
     sobel_y = jnp.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]])
 
-    # Define the convolution function using the Sobel kernels.
-    conv_x = lambda x: jnp.sum(sobel_x * x)
-    conv_y = lambda x: jnp.sum(sobel_y * x)
+    convolved_x = convolve2d(image, sobel_x, mode='same')
+    convolved_y = convolve2d(image, sobel_y, mode='same')
+    convolved_x += 1e-10
+    convolved_y += 1e-10
 
-    # Calculate the x and y gradients using the convolution function.
-    grad_x_image = grad(lambda x: jnp.sum(jnp.abs(jnp.apply_along_axis(conv_x, 1, x))))
-    grad_y_image = grad(lambda x: jnp.sum(jnp.abs(jnp.apply_along_axis(conv_y, 0, x))))
+    # Compute gradient magnitude
+    gradient_image = jnp.sqrt(jnp.square(convolved_x) + jnp.square(convolved_y))
+    grad_sum = jnp.sum(gradient_image)
+    return grad_sum
 
-    # Apply the gradients to the image.
-    grad_x_image = grad_x_image(image)
-    grad_y_image = grad_y_image(image)
-    magnitude = jnp.sqrt(jnp.square(grad_x_image) + jnp.square(grad_y_image))
+def print2d(array):
+    for row in array:
+        for element in row:
+            print(element, end=" ")
+        print()
 
-    return magnitude
-
-
-def loss(stack, theta):
-    overlaid = overlay(stack, 0, theta)
+def loss(stack,t, theta):
+    overlaid = overlay(stack, t, theta)
     return jnp.mean((stack[0] - overlaid) ** 2)
 
 
 def gradient_loss(stack, t, theta):
     overlaid = overlay(stack, t, theta)
-    return gradient_sum(overlaid)
+    return -gradient_sum(overlaid)
 
 
 def variance_loss(stack, t, theta):
@@ -110,6 +109,12 @@ def generate_data_points(stack, t, range_start, range_end, step_size, loss_funct
             y_data.append(loss(stack, t, theta))
         if loss_function == "pixel_variance":
             y_data.append(pixel_variance_loss(stack, t, theta))
+        if loss_function == "gradient_grad":
+            y_data.append(gradient_derivative(stack, t, theta))
+        if loss_function == "gradient_grad_grad":
+            y_data.append(gradient_derivative2(stack, t, theta))
+        if loss_function == "variance_grad":
+            y_data.append(variance_derivative(stack, t, theta))
 
     return x_data, y_data
 
@@ -132,7 +137,7 @@ def create_video(images, name):
     height, width = images[0].shape
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     name = name + ".mp4"
-    video_writer = cv2.VideoWriter(name, fourcc, 30.0, (width, height))
+    video_writer = cv2.VideoWriter(name, fourcc, len(images), (width, height))
     for array in images:
         video_writer.write(array)
     video_writer.release()
@@ -159,29 +164,39 @@ image_stack = generate_image_stack(img, -15.0, 10)
 create_gif(np.array(image_stack).astype(np.uint8), "stack")
 
 # Shift the image by a real value and interpolate the resulting image
-cv2.imshow("interpolated", np.array(image_stack[9]).astype(np.uint8))
-cv2.imshow("re-interpolated", np.array(shift_image(image_stack[9], 10 * 15)).astype(np.uint8))
+#cv2.imshow("interpolated", np.array(image_stack[9]).astype(np.uint8))
 
-x, y = generate_data_points(image_stack, 0.0, -100, 100, 0.1, "pixel_variance")
-plt.plot(x, y)
-plt.show()
-print("generated graph")
 
 variance_derivative = grad(variance_loss, 2)
 variance_gradient = variance_derivative(image_stack, 0, 10.0)
 print(variance_gradient)
 
-gif_images = variance_gradient_descent(image_stack, 0.0, 0.0, 0.02)
-
-create_gif(gif_images, "output")
-'''
-derivative = grad(loss, 2)
-gradient = derivative(img, right_img, 40.0)
-print(gradient)
 
 gradient_derivative = grad(gradient_loss,2)
-magnitude_gradient = gradient_derivative(img,right_img,40.0)
+gradient_derivative2 = grad(gradient_derivative,2)
+magnitude_gradient = gradient_derivative(image_stack,0.0,14.99999859)
 print(magnitude_gradient)
+
+x, y = generate_data_points(image_stack, 0.0, 1, 16, 0.01, "gradient")
+plt.plot(x, y, label='loss')
+print('loss_plotted')
+x2, y2 = generate_data_points(image_stack, 0.0, 1, 16, 0.01, "gradient_grad")
+plt.plot(x2, y2,label='loss_gradient')
+plt.legend()
+plt.grid(True)
+plt.show()
+print("generated graph")
+
+#gif_images = variance_gradient_descent(image_stack, 0.0, 0.0, 0.02)
+
+#create_gif(gif_images, "output")
+
+'''
+derivative = grad(loss, 2)
+gradient = derivative(image_stack, 0.0, 40.0)
+print(gradient)
+
+
 
 result = minimize(variance_loss, jnp.array([10.0]), args=(img, right_img), method="BFGS")
 
