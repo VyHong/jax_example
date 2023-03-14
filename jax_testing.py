@@ -8,12 +8,15 @@ import time
 from jax.test_util import check_grads
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider
 import imageio
 
 from jax.scipy.optimize import minimize
 
 
 mpl.use('TkAgg')
+
+
 def generate_image_stack(img, theta, number):
     jitted_shift = jit(shift_image)
     image_list = []
@@ -51,19 +54,19 @@ def overlay(stack, t, theta):
 
 
 def gradient_sum(image):
-
     sobel_x = jnp.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
     sobel_y = jnp.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]])
 
     convolved_x = convolve2d(image, sobel_x, mode='same')
     convolved_y = convolve2d(image, sobel_y, mode='same')
-    convolved_x += 1e-10
-    convolved_y += 1e-10
+    convolved_x += 1e-15
+    convolved_y += 1e-15
 
     # Compute gradient magnitude
     gradient_image = jnp.sqrt(jnp.square(convolved_x) + jnp.square(convolved_y))
     grad_sum = jnp.sum(gradient_image)
     return grad_sum
+
 
 def print2d(array):
     for row in array:
@@ -71,7 +74,8 @@ def print2d(array):
             print(element, end=" ")
         print()
 
-def loss(stack,t, theta):
+
+def loss(stack, t, theta):
     overlaid = overlay(stack, t, theta)
     return jnp.mean((stack[0] - overlaid) ** 2)
 
@@ -122,7 +126,7 @@ def generate_data_points(stack, t, range_start, range_end, step_size, loss_funct
 def variance_gradient_descent(stack, t, theta, learning_rate):
     image_list = []
     for i in range(100):
-        gradient = variance_derivative(stack, t, theta)
+        gradient = pixel_derivative(stack, t, theta)
 
         theta -= learning_rate * gradient
 
@@ -153,30 +157,68 @@ def create_gif(images, name):
     print("gif created")
 
 
-img = cv2.imread("images/banana.jpg", cv2.IMREAD_GRAYSCALE)
+def add_image_3d(img, depth, theta, ax):
+    # Create a meshgrid for the x and y coordinates
+    x, y = np.meshgrid(np.arange(img.shape[1]), np.arange(img.shape[0]))
+    depth = np.zeros_like(img) + depth
+    img = 255-img
+    ax.scatter(x + theta, depth, y, c=img, cmap='gray', alpha=0.03, edgecolors='none')
+
+
+def add_stack_3d(stack, depth_dif, theta, ax):
+    for i, pic in enumerate(stack):
+        add_image_3d(pic, i * depth_dif, i * theta, ax)
+
+
+img = cv2.imread("images/fish.png", cv2.IMREAD_GRAYSCALE)
 img_rows, img_cols = img.shape[:2]
 zero_cols = np.ones((img_rows, np.abs(50)), np.uint8) * 255
 img = np.hstack((img, zero_cols))
 img = 255 - img
-cv2.imshow("inverted", img)
+# cv2.imshow("inverted", img)
 
 image_stack = generate_image_stack(img, -15.0, 10)
-create_gif(np.array(image_stack).astype(np.uint8), "stack")
+# create_gif(np.array(image_stack).astype(np.uint8), "stack")
 
+pixel_derivative = grad(pixel_variance_loss,2)
+print(pixel_derivative(image_stack,0,0.0))
+'''
+# Create a 3D figure
+fig = plt.figure(figsize=(10, 10))
+ax = fig.add_subplot(111, projection='3d')
+ax.set_xlim([-100, 400])
+ax.set_box_aspect((1.5, 6, -1))
+ax.view_init(elev=2, azim=-90)
+
+ax.set_yticks([])
+ax.set_zticks([])
+ax.set_yticklabels([])
+ax.set_zticklabels([])
+
+# Add a slider
+axcolor = 'lightgoldenrodyellow'
+ax_x = plt.axes([0.25, 0.1, 0.65, 0.03], facecolor=axcolor)
+slider_x = Slider(ax_x, 'X', -10, 10, valinit=0)
+
+stack_temp = np.array(image_stack).astype(np.uint8)
+stack_temp[0] = np.array(overlay(image_stack, 0, 0.0)).astype(np.uint8)
+add_stack_3d(stack_temp, 10, -0.0, ax)
+
+# Show the plot
+plt.show()
 # Shift the image by a real value and interpolate the resulting image
-#cv2.imshow("interpolated", np.array(image_stack[9]).astype(np.uint8))
-
-
+# cv2.imshow("interpolated", np.array(image_stack[9]).astype(np.uint8))
+'''
 variance_derivative = grad(variance_loss, 2)
 variance_gradient = variance_derivative(image_stack, 0, 10.0)
 print(variance_gradient)
 
-
-gradient_derivative = grad(gradient_loss,2)
-gradient_derivative2 = grad(gradient_derivative,2)
-magnitude_gradient = gradient_derivative(image_stack,0.0,14.99999859)
+gradient_derivative = grad(gradient_loss, 2)
+gradient_derivative2 = grad(gradient_derivative, 2)
+magnitude_gradient = gradient_derivative(image_stack, 0.0, 14.99999859)
 print(magnitude_gradient)
 
+'''
 x, y = generate_data_points(image_stack, 0.0, 1, 16, 0.01, "gradient")
 plt.plot(x, y, label='loss')
 print('loss_plotted')
@@ -185,21 +227,18 @@ plt.plot(x2, y2,label='loss_gradient')
 plt.legend()
 plt.grid(True)
 plt.show()
-print("generated graph")
+print("generated graph")'''
 
-#gif_images = variance_gradient_descent(image_stack, 0.0, 0.0, 0.02)
+gif_images = variance_gradient_descent(image_stack, 0.0, 0.0, 0.02)
 
-#create_gif(gif_images, "output")
+create_gif(gif_images, "output")
 
 '''
 derivative = grad(loss, 2)
 gradient = derivative(image_stack, 0.0, 40.0)
 print(gradient)
 
-
-
 result = minimize(variance_loss, jnp.array([10.0]), args=(img, right_img), method="BFGS")
-
 '''
 
 key = cv2.waitKey(0)
